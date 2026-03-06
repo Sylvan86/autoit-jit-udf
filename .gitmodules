@@ -1,0 +1,3 @@
+[submodule "autoit-json-udf"]
+	path = autoit-json-udf
+	url = https://github.com/Sylvan86/autoit-json-udf.git

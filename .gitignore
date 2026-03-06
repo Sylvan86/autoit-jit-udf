@@ -1,0 +1,12 @@
+# Only include specific files - ignore everything else
+*
+
+# Allow these files/directories
+!.gitignore
+!.gitmodules
+!JIT.au3
+!README.md
+!LICENSE
+!examples/
+!examples/*.au3
+!autoit-json-udf/
