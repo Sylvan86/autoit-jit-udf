@@ -32,16 +32,18 @@ _JIT_Free($mCode)
 > **Please treat the Godbolt API with respect.**
 > The [Compiler Explorer](https://godbolt.org/) is a free community project. Every call to `_JIT_Compile` sends a request to their servers.
 
-After the first successful compilation, save the binary string and reuse it - no further API calls needed and much faster startup:
+After the first successful compilation, save the `ReusableString` and reuse it - no further API calls needed and much faster startup.
+The `ReusableString` is a self-contained JSON string that includes the compiled binary **and** all function offsets, so `_JIT_LoadBinary` returns the same map structure as `_JIT_Compile`:
 
 ```autoit
-; First run: compile and note the binary
+; First run: compile and note the ReusableString
 Global $mCode = _JIT_Compile($sCode)
-ConsoleWrite($mCode.BinaryString & @CRLF)  ; → save this string
+ConsoleWrite($mCode.ReusableString & @CRLF)  ; → save this string
 _JIT_Free($mCode)
 
-; All subsequent runs: load from saved binary (no internet needed!)
-Global $mCode = _JIT_LoadBinary("f20f58c0c3")
+; All subsequent runs: load from saved ReusableString (no internet needed!)
+Global $mCode = _JIT_LoadBinary('{"b":"f20f58c0c3","f":{"doubleIt":0}}')
+Global $aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
 ```
 
 See [`examples/example_reuse.au3`](examples/example_reuse.au3) for a complete walkthrough.
@@ -51,7 +53,7 @@ See [`examples/example_reuse.au3`](examples/example_reuse.au3) for a complete wa
 | Function | Description |
 |----------|-------------|
 | `_JIT_Compile($sCode)` | Compile C code and return executable memory |
-| `_JIT_LoadBinary($sBinary)` | Load a previously compiled binary (no API call) |
+| `_JIT_LoadBinary($sReusable)` | Load a previously compiled binary (no API call) |
 | `_JIT_Free($mCode)` | Release allocated executable memory |
 | `_JIT_SetServer(...)` | Configure server, compiler, language, proxy |
 | `_JIT_GetCompilers()` | List available compilers |
