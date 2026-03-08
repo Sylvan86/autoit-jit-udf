@@ -22,11 +22,13 @@
 ; ===============================================================================================================================
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
+;__JIT_ApplyAbsRelocs
 ;__JIT_BinaryToStruct
 ;__JIT_CompileCode
 ;__JIT_GetHTTP
 ;__JIT_IntToHexLE
 ;__JIT_ParseConstants
+;__JIT_ParseSections
 ;__JIT_SendGET
 ;__JIT_SendPOST
 ; ===============================================================================================================================
@@ -117,6 +119,12 @@ Func _JIT_Compile($sCode, $sCompilerFlags = "-O2")
 	If @error Then Return SetError(3, 0, Null)
 	$mCompiled.ptr = DllStructGetPtr($mCompiled.struct)
 
+	; apply absolute relocation fixups (32-bit code with constants)
+	If MapExists($mCompiled, "__absRelocs") Then
+		__JIT_ApplyAbsRelocs($mCompiled.struct, $mCompiled["__absRelocs"])
+		MapRemove($mCompiled, "__absRelocs")
+	EndIf
+
 	Return $mCompiled
 EndFunc   ;==>_JIT_Compile
 
@@ -143,14 +151,15 @@ EndFunc   ;==>_JIT_Compile
 ; Example .......: Yes
 ; ===============================================================================================================================
 Func _JIT_LoadBinary($sReusableString)
-	Local $sBinaryHex, $mFuncs
+	Local $sBinaryHex, $mFuncs, $aAbsRelocs
 
 	If StringLeft($sReusableString, 1) = "{" Then
-		; JSON format: {"b":"hex...","f":{"name":offset,...}}
+		; JSON format: {"b":"hex...","f":{"name":offset,...},"r":[pos1,...]}
 		Local $mParsed = _JSON_Parse($sReusableString)
 		If Not IsMap($mParsed) Then Return SetError(2, 0, Null)
 		$sBinaryHex = $mParsed.b
 		$mFuncs = $mParsed.f
+		If MapExists($mParsed, "r") Then $aAbsRelocs = $mParsed.r
 	Else
 		; plain hex string (single-function, offset 0)
 		$sBinaryHex = $sReusableString
@@ -160,6 +169,11 @@ Func _JIT_LoadBinary($sReusableString)
 
 	Local $tCode = __JIT_BinaryToStruct("0x" & $sBinaryHex)
 	If @error Then Return SetError(1, 0, Null)
+
+	; apply absolute relocation fixups (32-bit code with constants)
+	If IsArray($aAbsRelocs) Then
+		__JIT_ApplyAbsRelocs($tCode, $aAbsRelocs)
+	EndIf
 
 	Local $mRet[]
 	$mRet.ptr = DllStructGetPtr($tCode)
@@ -323,7 +337,8 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 	; parse ASM lines, binary opcodes, function offsets and relocations
 	Local $sASMCode = "", $sBinary = "", $sOpCode
 	Local $mFuncs[], $iOffset = 0, $bSkip = False
-	Local $aRelocs[16][3], $iRelocCount = 0 ; [][0]=byte position, [][1]=symbol, [][2]=addend
+	Local $aRelocs[16][4], $iRelocCount = 0 ; [][0]=byte position, [][1]=symbol, [][2]=addend, [][3]=type
+	Local $aAbsFixups[1], $iFixupCount = 0 ; positions needing runtime base-address fixup (R_386_32)
 
 	For $mLine In _JSON_Parse($sResponse).asm
 		If Not MapExists($mLine, "text") Then ContinueLoop
@@ -340,20 +355,19 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 
 		If $bSkip Then ContinueLoop
 
-		; detect relocation entries (e.g. "    R_X86_64_PC32 .LC0-0x4")
-		Local $aRelocMatch = StringRegExp($mLine.text, '^\s+R_X86_64_(\w+)\s+([\.\w]+)([+-]0x[0-9a-fA-F]+)?', 1)
+		; detect relocation entries (e.g. "    R_X86_64_PC32 .LC0-0x4" or "    R_386_32 .rodata.cst4")
+		Local $aRelocMatch = StringRegExp($mLine.text, '^\s+R_(X86_64_PC32|386_32)\s+([\.\w]+)([+-]0x[0-9a-fA-F]+)?', 1)
 		If Not @error Then
-			If $aRelocMatch[0] = "PC32" Then
-				If $iRelocCount >= UBound($aRelocs, 1) Then ReDim $aRelocs[$iRelocCount * 2][3]
-				$aRelocs[$iRelocCount][0] = $iOffset - 4
-				$aRelocs[$iRelocCount][1] = $aRelocMatch[1]
-				$aRelocs[$iRelocCount][2] = 0
-				If UBound($aRelocMatch) > 2 And $aRelocMatch[2] <> "" Then
-					Local $iSign = (StringLeft($aRelocMatch[2], 1) = "-") ? -1 : 1
-					$aRelocs[$iRelocCount][2] = $iSign * Dec(StringRegExpReplace($aRelocMatch[2], '^[+-]0x', ''))
-				EndIf
-				$iRelocCount += 1
+			If $iRelocCount >= UBound($aRelocs, 1) Then ReDim $aRelocs[$iRelocCount * 2][4]
+			$aRelocs[$iRelocCount][0] = $iOffset - 4
+			$aRelocs[$iRelocCount][1] = $aRelocMatch[1]
+			$aRelocs[$iRelocCount][2] = 0
+			$aRelocs[$iRelocCount][3] = $aRelocMatch[0]
+			If UBound($aRelocMatch) > 2 And $aRelocMatch[2] <> "" Then
+				Local $iSign = (StringLeft($aRelocMatch[2], 1) = "-") ? -1 : 1
+				$aRelocs[$iRelocCount][2] = $iSign * Dec(StringRegExpReplace($aRelocMatch[2], '^[+-]0x', ''))
 			EndIf
+			$iRelocCount += 1
 			ContinueLoop
 		EndIf
 
@@ -382,7 +396,12 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 		Local $sAsmResponse = __JIT_SendPOST("/api/compiler/" & $__g_JIT_sCompilerID & "/compile", $mPostData)
 		If @error Then Return SetError(2, 0, Null)
 
-		Local $mConstants = __JIT_ParseConstants($sAsmResponse)
+		; determine which relocation types are present
+		Local $bHasPC32 = False, $bHas386 = False
+		For $i = 0 To $iRelocCount - 1
+			If $aRelocs[$i][3] = "X86_64_PC32" Then $bHasPC32 = True
+			If $aRelocs[$i][3] = "386_32" Then $bHas386 = True
+		Next
 
 		; pad code section to 8-byte alignment
 		While Mod($iOffset, 8) <> 0
@@ -390,24 +409,65 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 			$iOffset += 1
 		WEnd
 
-		; append constant data and record their positions
-		Local $mDataOffsets[]
-		For $sKey In MapKeys($mConstants)
-			$mDataOffsets[$sKey] = $iOffset
-			$sBinary &= $mConstants[$sKey]
-			$iOffset += StringLen($mConstants[$sKey]) / 2
-		Next
+		If $bHasPC32 Then
+			; x86_64: RIP-relative relocations — patch displacements at build time (position-independent)
+			Local $mConstants = __JIT_ParseConstants($sAsmResponse)
 
-		; patch RIP-relative displacements: displacement = targetOffset + addend - patchOffset
-		For $i = 0 To $iRelocCount - 1
-			Local $sSymbol = $aRelocs[$i][1]
-			If Not MapExists($mDataOffsets, $sSymbol) Then ContinueLoop
-			Local $iDisp = $mDataOffsets[$sSymbol] + $aRelocs[$i][2] - $aRelocs[$i][0]
-			Local $sHex = __JIT_IntToHexLE($iDisp, 4)
-			; replace 4 bytes (8 hex chars) at the patch position
-			Local $iHexPos = $aRelocs[$i][0] * 2
-			$sBinary = StringLeft($sBinary, $iHexPos) & $sHex & StringMid($sBinary, $iHexPos + 9)
-		Next
+			; append constant data and record their positions
+			Local $mDataOffsets[]
+			For $sKey In MapKeys($mConstants)
+				$mDataOffsets[$sKey] = $iOffset
+				$sBinary &= $mConstants[$sKey]
+				$iOffset += StringLen($mConstants[$sKey]) / 2
+			Next
+
+			; patch RIP-relative displacements: displacement = targetOffset + addend - patchOffset
+			For $i = 0 To $iRelocCount - 1
+				If $aRelocs[$i][3] <> "X86_64_PC32" Then ContinueLoop
+				Local $sSymbol = $aRelocs[$i][1]
+				If Not MapExists($mDataOffsets, $sSymbol) Then ContinueLoop
+				Local $iDisp = $mDataOffsets[$sSymbol] + $aRelocs[$i][2] - $aRelocs[$i][0]
+				Local $sHex = __JIT_IntToHexLE($iDisp, 4)
+				Local $iHexPos = $aRelocs[$i][0] * 2
+				$sBinary = StringLeft($sBinary, $iHexPos) & $sHex & StringMid($sBinary, $iHexPos + 9)
+			Next
+		EndIf
+
+		If $bHas386 Then
+			; x86 32-bit: absolute relocations — need runtime fixup with base address
+			Local $mSections = __JIT_ParseSections($sAsmResponse)
+
+			; append section data and record their binary offsets
+			Local $mSecOffsets[]
+			For $sKey In MapKeys($mSections)
+				$mSecOffsets[$sKey] = $iOffset
+				$sBinary &= $mSections[$sKey]
+				$iOffset += StringLen($mSections[$sKey]) / 2
+			Next
+
+			; pre-patch: add section binary offset to the existing instruction addend
+			; (the final absolute address = basePtr + this value, applied at runtime)
+			ReDim $aAbsFixups[$iRelocCount]
+			For $i = 0 To $iRelocCount - 1
+				If $aRelocs[$i][3] <> "386_32" Then ContinueLoop
+				Local $sSymbol = $aRelocs[$i][1]
+				If Not MapExists($mSecOffsets, $sSymbol) Then ContinueLoop
+				Local $iPatchPos = $aRelocs[$i][0]
+				Local $iHexPos = $iPatchPos * 2
+
+				; read current 4-byte LE value (section offset baked into instruction)
+				Local $sLE = StringMid($sBinary, $iHexPos + 1, 8)
+				Local $iCurrentVal = Dec(StringMid($sLE, 7, 2) & StringMid($sLE, 5, 2) & StringMid($sLE, 3, 2) & StringMid($sLE, 1, 2))
+
+				; new value: binary offset of section + section-internal offset
+				Local $iNewVal = $mSecOffsets[$sSymbol] + $iCurrentVal
+				$sBinary = StringLeft($sBinary, $iHexPos) & __JIT_IntToHexLE($iNewVal, 4) & StringMid($sBinary, $iHexPos + 9)
+
+				$aAbsFixups[$iFixupCount] = $iPatchPos
+				$iFixupCount += 1
+			Next
+			ReDim $aAbsFixups[$iFixupCount]
+		EndIf
 	EndIf
 
 	Local $mRet[]
@@ -416,10 +476,14 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 	$mRet.BinaryString = $sBinary
 	$mRet.Funcs = $mFuncs
 
-	; build reusable export string (JSON with binary + function offsets)
+	; build reusable export string (JSON with binary + function offsets + optional relocation fixups)
 	Local $mExport[]
 	$mExport.b = $sBinary
 	$mExport.f = $mFuncs
+	If $iFixupCount > 0 Then
+		$mExport.r = $aAbsFixups
+		$mRet["__absRelocs"] = $aAbsFixups
+	EndIf
 	$mRet.ReusableString = _JSON_GenerateCompact($mExport)
 
 	Return $mRet
@@ -457,6 +521,131 @@ Func __JIT_BinaryToStruct($bBinary)
 
 	Return $tCode
 EndFunc   ;==>__JIT_BinaryToStruct
+
+
+; #INTERNAL_USE_ONLY# ===========================================================================================================
+; Name...........: __JIT_ApplyAbsRelocs
+; Description ...: Patches absolute addresses in executable memory by adding the base pointer
+; Syntax.........: __JIT_ApplyAbsRelocs($tCode, $aPositions)
+; Parameters ....: $tCode      - DllStruct with executable memory (from __JIT_BinaryToStruct)
+;                  $aPositions - Array of byte positions that contain relative offsets to be patched
+; Return values .: None
+; Author ........: AspirinJunkie
+; Modified.......:
+; Remarks .......: Each position holds a 4-byte LE offset relative to the binary start.
+;                  This function adds the actual base address to make them absolute.
+;                  Used for R_386_32 relocations in 32-bit compiled code.
+; Related .......: __JIT_CompileCode, _JIT_LoadBinary
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __JIT_ApplyAbsRelocs($tCode, $aPositions)
+	Local $pBase = DllStructGetPtr($tCode)
+	Local $iBase = Number($pBase)
+	For $i = 0 To UBound($aPositions) - 1
+		Local $tPatch = DllStructCreate("dword", $pBase + $aPositions[$i])
+		DllStructSetData($tPatch, 1, DllStructGetData($tPatch, 1) + $iBase)
+	Next
+EndFunc   ;==>__JIT_ApplyAbsRelocs
+
+
+; #INTERNAL_USE_ONLY# ===========================================================================================================
+; Name...........: __JIT_ParseSections
+; Description ...: Parses .rodata.cst* section data from pure ASM output
+; Syntax.........: __JIT_ParseSections($sAsmResponse)
+; Parameters ....: $sAsmResponse - Raw JSON response from the Compiler Explorer API (pure ASM mode)
+; Return values .: Map of section names (e.g. ".rodata.cst4") to their hex-encoded byte data
+; Author ........: AspirinJunkie
+; Modified.......:
+; Remarks .......: Recognizes .long, .quad, .byte, .zero directives and .align padding.
+;                  Used for R_386_32 relocations in 32-bit compiled code.
+; Related .......: __JIT_CompileCode
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __JIT_ParseSections($sAsmResponse)
+	Local $mSections[], $sSection = "", $iSecBytes = 0, $aMatch
+
+	For $mLine In _JSON_Parse($sAsmResponse).asm
+		If Not IsMap($mLine) Or Not MapExists($mLine, "text") Then ContinueLoop
+		Local $sText = $mLine.text
+
+		; detect .section .rodata.cst* directives
+		$aMatch = StringRegExp($sText, '^\s+\.section\s+(\.rodata\.cst\d+)', 1)
+		If Not @error Then
+			$sSection = $aMatch[0]
+			If Not MapExists($mSections, $sSection) Then
+				$mSections[$sSection] = ""
+			EndIf
+			$iSecBytes = StringLen($mSections[$sSection]) / 2
+			ContinueLoop
+		EndIf
+
+		; exit section on .text or non-rodata .section
+		If StringRegExp($sText, '^\s+\.text') Then
+			$sSection = ""
+			ContinueLoop
+		EndIf
+		If StringRegExp($sText, '^\s+\.section') Then
+			$sSection = ""
+			ContinueLoop
+		EndIf
+
+		If $sSection = "" Then ContinueLoop
+
+		; skip labels (e.g. ".LC0:")
+		If StringRegExp($sText, '^\.LC\d+:') Then ContinueLoop
+
+		; .align N or .p2align N
+		$aMatch = StringRegExp($sText, '^\s+\.(p2)?align\s+(\d+)', 1)
+		If Not @error Then
+			Local $iAlign = Int($aMatch[1])
+			If $aMatch[0] = "p2" Then $iAlign = 2 ^ $iAlign
+			Local $iPadding = Mod($iAlign - Mod($iSecBytes, $iAlign), $iAlign)
+			For $j = 1 To $iPadding
+				$mSections[$sSection] &= "00"
+			Next
+			$iSecBytes += $iPadding
+			ContinueLoop
+		EndIf
+
+		; .long (4 bytes little-endian)
+		$aMatch = StringRegExp($sText, '^\s+\.long\s+(-?\d+)', 1)
+		If Not @error Then
+			$mSections[$sSection] &= __JIT_IntToHexLE(Int($aMatch[0]), 4)
+			$iSecBytes += 4
+			ContinueLoop
+		EndIf
+
+		; .quad (8 bytes little-endian)
+		$aMatch = StringRegExp($sText, '^\s+\.quad\s+(-?\d+)', 1)
+		If Not @error Then
+			$mSections[$sSection] &= __JIT_IntToHexLE($aMatch[0], 8)
+			$iSecBytes += 8
+			ContinueLoop
+		EndIf
+
+		; .byte (1 byte)
+		$aMatch = StringRegExp($sText, '^\s+\.byte\s+(0x[0-9a-fA-F]+|\d+)', 1)
+		If Not @error Then
+			$mSections[$sSection] &= Hex(Number($aMatch[0]), 2)
+			$iSecBytes += 1
+			ContinueLoop
+		EndIf
+
+		; .zero N (N zero bytes)
+		$aMatch = StringRegExp($sText, '^\s+\.zero\s+(\d+)', 1)
+		If Not @error Then
+			For $j = 1 To Int($aMatch[0])
+				$mSections[$sSection] &= "00"
+			Next
+			$iSecBytes += Int($aMatch[0])
+			ContinueLoop
+		EndIf
+	Next
+
+	Return $mSections
+EndFunc   ;==>__JIT_ParseSections
 
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================

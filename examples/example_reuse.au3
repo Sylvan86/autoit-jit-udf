@@ -38,7 +38,7 @@
 ; (one for 64-bit, one for 32-bit AutoIt)
 Global $sReusable = @AutoItX64 _
 		? '{"b":"f20f58c0c366662e0f1f840000000000f20f590508000000c3CCCCCCCCCCCCCC0000000000000840","f":{"doubleIt":0,"tripleIt":16}}' _
-		: '{"b":"dd442404d8c0c208008db42600000000d90500000000dc4c2404c20800","f":{"doubleIt":0,"tripleIt":16}}'
+		: '{"b":"dd442404d8c0c208008db42600000000d90520000000dc4c2404c20800CCCCCC00004040","f":{"doubleIt":0,"tripleIt":16},"r":[18]}'
 
 ; load the binary into executable memory - no API call needed!
 ; function offsets are included automatically
