@@ -82,10 +82,12 @@ EndFunc   ;==>_JIT_SetServer
 ; Parameters ....: $sCode          - C source code as string. Prefix exported functions with CALLCONV.
 ;                  $sCompilerFlags - [optional] Additional compiler flags. Default is "-O2".
 ; Return values .: Success         - Map with keys:
-;                                  |.ptr    - Pointer to executable memory (use with DllCallAddress)
-;                                  |.Funcs  - Map of function names to their byte offsets
-;                                  |.Code   - Disassembled ASM code as string
-;                                  |.Binary - Raw binary data
+;                                  |.ptr            - Pointer to executable memory (use with DllCallAddress)
+;                                  |.Funcs          - Map of function names to their byte offsets
+;                                  |.Code           - Disassembled ASM code as string
+;                                  |.Binary         - Raw binary data
+;                                  |.BinaryString   - Hex-encoded binary (without "0x" prefix)
+;                                  |.ReusableString - JSON string for _JIT_LoadBinary (contains binary + offsets)
 ;                  Failure         - Null and @error is set:
 ;                                  |1 - Compilation failed
 ;                                  |2 - HTTP object creation failed
@@ -121,38 +123,48 @@ EndFunc   ;==>_JIT_Compile
 
 ; #FUNCTION# ====================================================================================================================
 ; Name...........: _JIT_LoadBinary
-; Description ...: Loads a previously compiled binary string into executable memory
-; Syntax.........: _JIT_LoadBinary($sBinaryString[, $mFuncOffsets = Default])
-; Parameters ....: $sBinaryString - Hex-encoded binary string (as returned by $mCode.BinaryString from _JIT_Compile)
-;                  $mFuncOffsets  - [optional] Map of function name to byte offset (as returned by $mCode.Funcs).
-;                                  Default is an empty map (use offset 0 for single-function binaries).
-; Return values .: Success       - Map with keys:
-;                                 |.ptr    - Pointer to executable memory (use with DllCallAddress)
-;                                 |.Funcs  - Map of function names to their byte offsets
-;                                 |.struct - Internal DllStruct (prevents garbage collection)
-;                  Failure       - Null and @error is set:
-;                                 |1 - VirtualAlloc failed
+; Description ...: Loads a previously compiled binary into executable memory
+; Syntax.........: _JIT_LoadBinary($sReusableString)
+; Parameters ....: $sReusableString - ReusableString from a previous _JIT_Compile call (JSON containing binary + offsets)
+;                                     Also accepts a plain hex string for single-function binaries (offset 0).
+; Return values .: Success          - Map with keys:
+;                                    |.ptr    - Pointer to executable memory (use with DllCallAddress)
+;                                    |.Funcs  - Map of function names to their byte offsets
+;                                    |.struct - Internal DllStruct (prevents garbage collection)
+;                  Failure          - Null and @error is set:
+;                                    |1 - VirtualAlloc failed
+;                                    |2 - JSON parse failed
 ; Author ........: AspirinJunkie
 ; Modified.......:
-; Remarks .......: Use this to skip recompilation by reusing the BinaryString from a previous _JIT_Compile call.
+; Remarks .......: Use this to skip recompilation by reusing the ReusableString from a previous _JIT_Compile call.
 ;                  This avoids API calls and is much faster. Use _JIT_Free to release the memory when done.
 ; Related .......: _JIT_Compile, _JIT_Free
 ; Link ..........:
 ; Example .......: Yes
 ; ===============================================================================================================================
-Func _JIT_LoadBinary($sBinaryString, $mFuncOffsets = Default)
-	Local $tCode = __JIT_BinaryToStruct("0x" & $sBinaryString)
+Func _JIT_LoadBinary($sReusableString)
+	Local $sBinaryHex, $mFuncs
+
+	If StringLeft($sReusableString, 1) = "{" Then
+		; JSON format: {"b":"hex...","f":{"name":offset,...}}
+		Local $mParsed = _JSON_Parse($sReusableString)
+		If Not IsMap($mParsed) Then Return SetError(2, 0, Null)
+		$sBinaryHex = $mParsed.b
+		$mFuncs = $mParsed.f
+	Else
+		; plain hex string (single-function, offset 0)
+		$sBinaryHex = $sReusableString
+		Local $mEmpty[]
+		$mFuncs = $mEmpty
+	EndIf
+
+	Local $tCode = __JIT_BinaryToStruct("0x" & $sBinaryHex)
 	If @error Then Return SetError(1, 0, Null)
 
 	Local $mRet[]
 	$mRet.ptr = DllStructGetPtr($tCode)
 	$mRet.struct = $tCode
-	If IsMap($mFuncOffsets) Then
-		$mRet.Funcs = $mFuncOffsets
-	Else
-		Local $mEmpty[]
-		$mRet.Funcs = $mEmpty
-	EndIf
+	$mRet.Funcs = $mFuncs
 
 	Return $mRet
 EndFunc   ;==>_JIT_LoadBinary
@@ -273,7 +285,7 @@ EndFunc   ;==>_JIT_DescribeOpcode
 ; Syntax.........: __JIT_CompileCode($sCode[, $sCompilerFlags = "-O2"])
 ; Parameters ....: $sCode          - Preprocessed C source code (with CALLCONV already defined)
 ;                  $sCompilerFlags - [optional] Compiler flags. Default is "-O2".
-; Return values .: Success         - Map with keys: .Code, .Binary, .BinaryString, .Funcs
+; Return values .: Success         - Map with keys: .Code, .Binary, .BinaryString, .Funcs, .ReusableString
 ;                  Failure         - Null and @error set (1 = compilation failed, 2 = HTTP error)
 ; Author ........: AspirinJunkie
 ; Modified.......:
@@ -403,6 +415,12 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 	$mRet.Binary = Binary("0x" & $sBinary)
 	$mRet.BinaryString = $sBinary
 	$mRet.Funcs = $mFuncs
+
+	; build reusable export string (JSON with binary + function offsets)
+	Local $mExport[]
+	$mExport.b = $sBinary
+	$mExport.f = $mFuncs
+	$mRet.ReusableString = _JSON_GenerateCompact($mExport)
 
 	Return $mRet
 EndFunc   ;==>__JIT_CompileCode
