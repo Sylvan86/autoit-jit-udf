@@ -42,7 +42,7 @@ ConsoleWrite($mCode.ReusableString & @CRLF)  ; → save this string
 _JIT_Free($mCode)
 
 ; All subsequent runs: load from saved ReusableString (no internet needed!)
-Global $mCode = _JIT_LoadBinary('{"b":"f20f58c0c3","f":{"doubleIt":0}}')
+Global $mCode = _JIT_LoadBinary('{"b":"8g9YwMM","f":{"doubleIt":0}}')
 Global $aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
 ```
 

@@ -89,7 +89,7 @@ EndFunc   ;==>_JIT_SetServer
 ;                                  |.Code           - Disassembled ASM code as string
 ;                                  |.Binary         - Raw binary data
 ;                                  |.BinaryString   - Hex-encoded binary (without "0x" prefix)
-;                                  |.ReusableString - JSON string for _JIT_LoadBinary (contains binary + offsets)
+;                                  |.ReusableString - JSON string for _JIT_LoadBinary (contains base64-encoded binary + offsets)
 ;                  Failure         - Null and @error is set:
 ;                                  |1 - Compilation failed
 ;                                  |2 - HTTP object creation failed
@@ -133,7 +133,7 @@ EndFunc   ;==>_JIT_Compile
 ; Name...........: _JIT_LoadBinary
 ; Description ...: Loads a previously compiled binary into executable memory
 ; Syntax.........: _JIT_LoadBinary($sReusableString)
-; Parameters ....: $sReusableString - ReusableString from a previous _JIT_Compile call (JSON containing binary + offsets)
+; Parameters ....: $sReusableString - ReusableString from a previous _JIT_Compile call (JSON containing base64-encoded binary + offsets)
 ;                                     Also accepts a plain hex string for single-function binaries (offset 0).
 ; Return values .: Success          - Map with keys:
 ;                                    |.ptr    - Pointer to executable memory (use with DllCallAddress)
@@ -151,23 +151,23 @@ EndFunc   ;==>_JIT_Compile
 ; Example .......: Yes
 ; ===============================================================================================================================
 Func _JIT_LoadBinary($sReusableString)
-	Local $sBinaryHex, $mFuncs, $aAbsRelocs
+	Local $bBinary, $mFuncs, $aAbsRelocs
 
 	If StringLeft($sReusableString, 1) = "{" Then
-		; JSON format: {"b":"hex...","f":{"name":offset,...},"r":[pos1,...]}
+		; JSON format: {"b":"<base64>","f":{"name":offset,...},"r":[pos1,...]}
 		Local $mParsed = _JSON_Parse($sReusableString)
 		If Not IsMap($mParsed) Then Return SetError(2, 0, Null)
-		$sBinaryHex = $mParsed.b
+		$bBinary = __JSON_Base64Decode($mParsed.b)
 		$mFuncs = $mParsed.f
 		If MapExists($mParsed, "r") Then $aAbsRelocs = $mParsed.r
 	Else
 		; plain hex string (single-function, offset 0)
-		$sBinaryHex = $sReusableString
+		$bBinary = Binary("0x" & $sReusableString)
 		Local $mEmpty[]
 		$mFuncs = $mEmpty
 	EndIf
 
-	Local $tCode = __JIT_BinaryToStruct("0x" & $sBinaryHex)
+	Local $tCode = __JIT_BinaryToStruct($bBinary)
 	If @error Then Return SetError(1, 0, Null)
 
 	; apply absolute relocation fixups (32-bit code with constants)
@@ -299,7 +299,7 @@ EndFunc   ;==>_JIT_DescribeOpcode
 ; Syntax.........: __JIT_CompileCode($sCode[, $sCompilerFlags = "-O2"])
 ; Parameters ....: $sCode          - Preprocessed C source code (with CALLCONV already defined)
 ;                  $sCompilerFlags - [optional] Compiler flags. Default is "-O2".
-; Return values .: Success         - Map with keys: .Code, .Binary, .BinaryString, .Funcs, .ReusableString
+; Return values .: Success         - Map with keys: .Code, .Binary, .BinaryString, .Funcs, .ReusableString (base64-encoded)
 ;                  Failure         - Null and @error set (1 = compilation failed, 2 = HTTP error)
 ; Author ........: AspirinJunkie
 ; Modified.......:
@@ -476,9 +476,9 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 	$mRet.BinaryString = $sBinary
 	$mRet.Funcs = $mFuncs
 
-	; build reusable export string (JSON with binary + function offsets + optional relocation fixups)
+	; build reusable export string (JSON with base64-encoded binary + function offsets + optional relocation fixups)
 	Local $mExport[]
-	$mExport.b = $sBinary
+	$mExport.b = $mRet.Binary
 	$mExport.f = $mFuncs
 	If $iFixupCount > 0 Then
 		$mExport.r = $aAbsFixups
