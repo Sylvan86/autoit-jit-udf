@@ -96,23 +96,25 @@ EndFunc   ;==>_JIT_SetServer
 ; Author ........: AspirinJunkie
 ; Modified.......:
 ; Remarks .......: The CALLCONV macro is automatically defined based on the AutoIt process architecture:
-;                  - 64-bit: __attribute__((ms_abi))
-;                  - 32-bit: __attribute__((stdcall))
+;                  - 64-bit: __attribute__((ms_abi))    + -fPIC (avoids R_X86_64_32 relocations)
+;                  - 32-bit: __attribute__((stdcall))   + -mincoming-stack-boundary=2 (safe stack alignment)
 ;                  Use _JIT_Free to release the allocated memory when no longer needed.
 ; Related .......: _JIT_Free, _JIT_SetServer
 ; Link ..........: https://github.com/compiler-explorer/compiler-explorer/blob/main/docs/API.md
 ; Example .......: Yes
 ; ===============================================================================================================================
 Func _JIT_Compile($sCode, $sCompilerFlags = "-O2")
+	; platform-specific flags required for AutoIt interop (always applied, independent of $sCompilerFlags)
+	Local $sInternalFlags
 	If @AutoItX64 Then
 		$sCode = '#define CALLCONV __attribute__((ms_abi))' & @LF & $sCode
-		$sCompilerFlags &= " -m64"
+		$sInternalFlags = "-m64 -fPIC"
 	Else
 		$sCode = '#define CALLCONV __attribute__((stdcall))' & @LF & $sCode
-		$sCompilerFlags &= " -m32"
+		$sInternalFlags = "-m32 -mincoming-stack-boundary=2"
 	EndIf
 
-	Local $mCompiled = __JIT_CompileCode($sCode, $sCompilerFlags)
+	Local $mCompiled = __JIT_CompileCode($sCode, $sCompilerFlags & " " & $sInternalFlags)
 	If @error Then Return SetError(@error, 0, Null)
 
 	$mCompiled.struct = __JIT_BinaryToStruct($mCompiled.Binary)
@@ -412,13 +414,19 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 		If $bHasPC32 Then
 			; x86_64: RIP-relative relocations — patch displacements at build time (position-independent)
 			Local $mConstants = __JIT_ParseConstants($sAsmResponse)
+			Local $mSectionsPC = __JIT_ParseSections($sAsmResponse)
 
-			; append constant data and record their positions
+			; append constant data (.LC* labels) and section data (.rodata*), record their positions
 			Local $mDataOffsets[]
 			For $sKey In MapKeys($mConstants)
 				$mDataOffsets[$sKey] = $iOffset
 				$sBinary &= $mConstants[$sKey]
 				$iOffset += StringLen($mConstants[$sKey]) / 2
+			Next
+			For $sKey In MapKeys($mSectionsPC)
+				$mDataOffsets[$sKey] = $iOffset
+				$sBinary &= $mSectionsPC[$sKey]
+				$iOffset += StringLen($mSectionsPC[$sKey]) / 2
 			Next
 
 			; patch RIP-relative displacements: displacement = targetOffset + addend - patchOffset
@@ -551,13 +559,15 @@ EndFunc   ;==>__JIT_ApplyAbsRelocs
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
 ; Name...........: __JIT_ParseSections
-; Description ...: Parses .rodata.cst* section data from pure ASM output
+; Description ...: Parses .rodata section data from pure ASM output
 ; Syntax.........: __JIT_ParseSections($sAsmResponse)
 ; Parameters ....: $sAsmResponse - Raw JSON response from the Compiler Explorer API (pure ASM mode)
-; Return values .: Map of section names (e.g. ".rodata.cst4") to their hex-encoded byte data
+; Return values .: Map of section names (e.g. ".rodata", ".rodata.cst4") to their hex-encoded byte data
 ; Author ........: AspirinJunkie
 ; Modified.......:
-; Remarks .......: Recognizes .long, .quad, .byte, .zero directives and .align padding.
+; Remarks .......: Handles .rodata and all .rodata.* subsections (e.g. .rodata.cst4, .rodata.cst8).
+;                  Recognizes .long, .quad, .byte, .zero directives and .align padding.
+;                  Labels within sections (e.g. RC:, .LC0:) are skipped.
 ;                  Used for R_386_32 relocations in 32-bit compiled code.
 ; Related .......: __JIT_CompileCode
 ; Link ..........:
@@ -570,8 +580,8 @@ Func __JIT_ParseSections($sAsmResponse)
 		If Not IsMap($mLine) Or Not MapExists($mLine, "text") Then ContinueLoop
 		Local $sText = $mLine.text
 
-		; detect .section .rodata.cst* directives
-		$aMatch = StringRegExp($sText, '^\s+\.section\s+(\.rodata\.cst\d+)', 1)
+		; detect .section .rodata* directives
+		$aMatch = StringRegExp($sText, '^\s+\.section\s+(\.rodata(?:\.\w+)*)', 1)
 		If Not @error Then
 			$sSection = $aMatch[0]
 			If Not MapExists($mSections, $sSection) Then
@@ -593,8 +603,8 @@ Func __JIT_ParseSections($sAsmResponse)
 
 		If $sSection = "" Then ContinueLoop
 
-		; skip labels (e.g. ".LC0:")
-		If StringRegExp($sText, '^\.LC\d+:') Then ContinueLoop
+		; skip labels (e.g. ".LC0:", "RC:", "rot.1234:")
+		If StringRegExp($sText, '^[.\w]+:') Then ContinueLoop
 
 		; .align N or .p2align N
 		$aMatch = StringRegExp($sText, '^\s+\.(p2)?align\s+(\d+)', 1)
