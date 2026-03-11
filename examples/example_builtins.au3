@@ -61,15 +61,15 @@ Global $mCode = _JIT_Compile($sSourceCode, "-O2 -ffast-math")
 If @error Then Exit MsgBox(16, "Error", "Compilation failed")
 
 ; hypotenuse(3, 4) = 5.0  (uses __builtin_sqrt)
-Global $aDll = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["hypotenuse"], "DOUBLE", 3.0, "DOUBLE", 4.0)
+Global $aDll = DllCallAddress("double", $mCode.FuncPtr["hypotenuse"], "DOUBLE", 3.0, "DOUBLE", 4.0)
 ConsoleWrite("hypotenuse(3, 4) = " & $aDll[0] & @CRLF)
 
 ; clamp(7.5, 0, 5) = 5.0  (uses __builtin_fmin + __builtin_fmax)
-$aDll = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["clamp"], "DOUBLE", 7.5, "DOUBLE", 0.0, "DOUBLE", 5.0)
+$aDll = DllCallAddress("double", $mCode.FuncPtr["clamp"], "DOUBLE", 7.5, "DOUBLE", 0.0, "DOUBLE", 5.0)
 ConsoleWrite("clamp(7.5, 0, 5) = " & $aDll[0] & @CRLF)
 
 ; roundDown(3.7) = 3.0  (uses __builtin_floor)
-$aDll = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["roundDown"], "DOUBLE", 3.7)
+$aDll = DllCallAddress("double", $mCode.FuncPtr["roundDown"], "DOUBLE", 3.7)
 ConsoleWrite("roundDown(3.7) = " & $aDll[0] & @CRLF)
 
 _JIT_Free($mCode)

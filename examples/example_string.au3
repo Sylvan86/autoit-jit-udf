@@ -34,7 +34,7 @@ If @error Then Exit MsgBox(16, "Error", "Compilation failed")
 ; AutoIt creates an internal ANSI buffer which the C function modifies in-place
 ; the modified result can be read back from $aDll[1] (first parameter)
 Global $sInput = "Hello World, this is a JIT Test!"
-Global $aDll = DllCallAddress("none", $mCode.ptr + $mCode.Funcs["alternatingCase"], "STR", $sInput)
+Global $aDll = DllCallAddress("none", $mCode.FuncPtr["alternatingCase"], "STR", $sInput)
 
 ConsoleWrite("Input:  " & $sInput & @CRLF)
 ConsoleWrite("Output: " & $aDll[1] & @CRLF)

@@ -20,7 +20,7 @@ Global $sCode = _
 Global $mCode = _JIT_Compile($sCode)
 
 ; Call the compiled function
-Global $aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
+Global $aResult = DllCallAddress("double", $mCode.FuncPtr["doubleIt"], "DOUBLE", 21.0)
 ConsoleWrite("Result: " & $aResult[0] & @CRLF)  ; → 42.0
 
 ; Free memory when done
@@ -43,7 +43,7 @@ _JIT_Free($mCode)
 
 ; All subsequent runs: load from saved ReusableString (no internet needed!)
 Global $mCode = _JIT_LoadBinary('{"b":"8g9YwMM","f":{"doubleIt":0}}')
-Global $aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
+Global $aResult = DllCallAddress("double", $mCode.FuncPtr["doubleIt"], "DOUBLE", 21.0)
 ```
 
 See [`examples/example_reuse.au3`](examples/example_reuse.au3) for a complete walkthrough.

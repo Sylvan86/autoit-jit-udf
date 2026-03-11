@@ -85,7 +85,9 @@ EndFunc   ;==>_JIT_SetServer
 ;                  $sCompilerFlags - [optional] Additional compiler flags. Default is "-O2".
 ; Return values .: Success         - Map with keys:
 ;                                  |.ptr            - Pointer to executable memory (use with DllCallAddress)
-;                                  |.Funcs          - Map of function names to their byte offsets
+;                                  |.FuncOffsets    - Map of function names to their byte offsets
+;                                  |.FuncPtr        - Map of function names to their absolute pointers (use directly with DllCallAddress)
+;                                  |.Funcs          - [deprecated] Same as .FuncOffsets. Use .FuncOffsets or .FuncPtr instead.
 ;                                  |.Code           - Disassembled ASM code as string
 ;                                  |.Binary         - Raw binary data
 ;                                  |.BinaryString   - Hex-encoded binary (without "0x" prefix)
@@ -127,6 +129,13 @@ Func _JIT_Compile($sCode, $sCompilerFlags = "-O2")
 		MapRemove($mCompiled, "__absRelocs")
 	EndIf
 
+	; build absolute function pointer map
+	Local $mFuncPtr[]
+	For $sFunc In MapKeys($mCompiled.FuncOffsets)
+		$mFuncPtr[$sFunc] = $mCompiled.ptr + $mCompiled.FuncOffsets[$sFunc]
+	Next
+	$mCompiled.FuncPtr = $mFuncPtr
+
 	Return $mCompiled
 EndFunc   ;==>_JIT_Compile
 
@@ -138,9 +147,11 @@ EndFunc   ;==>_JIT_Compile
 ; Parameters ....: $sReusableString - ReusableString from a previous _JIT_Compile call (JSON containing base64-encoded binary + offsets)
 ;                                     Also accepts a plain hex string for single-function binaries (offset 0).
 ; Return values .: Success          - Map with keys:
-;                                    |.ptr    - Pointer to executable memory (use with DllCallAddress)
-;                                    |.Funcs  - Map of function names to their byte offsets
-;                                    |.struct - Internal DllStruct (prevents garbage collection)
+;                                    |.ptr         - Pointer to executable memory (use with DllCallAddress)
+;                                    |.FuncOffsets - Map of function names to their byte offsets
+;                                    |.FuncPtr     - Map of function names to their absolute pointers (use directly with DllCallAddress)
+;                                    |.Funcs       - [deprecated] Same as .FuncOffsets. Use .FuncOffsets or .FuncPtr instead.
+;                                    |.struct      - Internal DllStruct (prevents garbage collection)
 ;                  Failure          - Null and @error is set:
 ;                                    |1 - VirtualAlloc failed
 ;                                    |2 - JSON parse failed
@@ -180,7 +191,15 @@ Func _JIT_LoadBinary($sReusableString)
 	Local $mRet[]
 	$mRet.ptr = DllStructGetPtr($tCode)
 	$mRet.struct = $tCode
-	$mRet.Funcs = $mFuncs
+	$mRet.FuncOffsets = $mFuncs
+	$mRet.Funcs = $mFuncs ; deprecated - use .FuncOffsets/.FuncPtr instead
+
+	; build absolute function pointer map
+	Local $mFuncPtr[]
+	For $sFunc In MapKeys($mFuncs)
+		$mFuncPtr[$sFunc] = $mRet.ptr + $mFuncs[$sFunc]
+	Next
+	$mRet.FuncPtr = $mFuncPtr
 
 	Return $mRet
 EndFunc   ;==>_JIT_LoadBinary
@@ -482,7 +501,8 @@ Func __JIT_CompileCode($sCode, $sCompilerFlags = "-O2")
 	$mRet.Code = $sASMCode
 	$mRet.Binary = Binary("0x" & $sBinary)
 	$mRet.BinaryString = $sBinary
-	$mRet.Funcs = $mFuncs
+	$mRet.FuncOffsets = $mFuncs
+	$mRet.Funcs = $mFuncs ; deprecated - use .FuncOffsets/.FuncPtr instead
 
 	; build reusable export string (JSON with base64-encoded binary + function offsets + optional relocation fixups)
 	Local $mExport[]

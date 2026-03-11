@@ -50,7 +50,7 @@ Next
 DllStructSetData($tData, 1, -1e16, $iN)
 
 ; Kahan summation via compiled C code
-Global $aDll = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["kahanSum"], _
+Global $aDll = DllCallAddress("double", $mCode.FuncPtr["kahanSum"], _
 		"PTR", DllStructGetPtr($tData), _
 		"INT", $iN)
 

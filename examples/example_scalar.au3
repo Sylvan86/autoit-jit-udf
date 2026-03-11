@@ -20,7 +20,7 @@ Global $mCode = _JIT_Compile($sSourceCode)
 If @error Then Exit MsgBox(16, "Error", "Compilation failed")
 
 ; call the compiled function using DllCallAddress
-Global $aDll = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
+Global $aDll = DllCallAddress("double", $mCode.FuncPtr["doubleIt"], "DOUBLE", 21.0)
 ConsoleWrite("doubleIt(21.0) = " & $aDll[0] & @CRLF) ; expected: 42.0
 
 ; always free the allocated executable memory when done

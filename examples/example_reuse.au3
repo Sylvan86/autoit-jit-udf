@@ -12,7 +12,7 @@
 ;   1. Compile once with _JIT_Compile, note $mCode.ReusableString
 ;   2. Paste the ReusableString into your script as a constant
 ;   3. Use _JIT_LoadBinary() for all subsequent runs
-;      (returns the same map structure as _JIT_Compile, including Funcs)
+;      (returns the same map structure as _JIT_Compile, including FuncPtr)
 ; ============================================================
 
 #include "..\JIT.au3"
@@ -45,12 +45,12 @@ Global $sReusable = @AutoItX64 _
 Global $mCode = _JIT_LoadBinary($sReusable)
 If @error Then Exit MsgBox(16, "Error", "Failed to load binary")
 
-; call functions using pointer + offset, just like with _JIT_Compile
-Global $aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["doubleIt"], "DOUBLE", 21.0)
+; call functions using the absolute pointer, just like with _JIT_Compile
+Global $aResult = DllCallAddress("double", $mCode.FuncPtr["doubleIt"], "DOUBLE", 21.0)
 ConsoleWrite("doubleIt(21.0) = " & $aResult[0] & @CRLF) ; expected: 42.0
 
-If MapExists($mCode.Funcs, "tripleIt") Then
-	$aResult = DllCallAddress("double", $mCode.ptr + $mCode.Funcs["tripleIt"], "DOUBLE", 21.0)
+If MapExists($mCode.FuncPtr, "tripleIt") Then
+	$aResult = DllCallAddress("double", $mCode.FuncPtr["tripleIt"], "DOUBLE", 21.0)
 	ConsoleWrite("tripleIt(21.0) = " & $aResult[0] & @CRLF) ; expected: 63.0
 EndIf
 
